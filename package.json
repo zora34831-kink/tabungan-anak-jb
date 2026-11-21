@@ -1,7 +1,7 @@
 
 {
   "name": "tabungan-anak-jb",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.4.2",
+    "@capacitor/assets": "^3.0.5",
     "vite": "^6.4.1"
   }
 }
