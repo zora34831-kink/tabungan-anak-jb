@@ -1,4 +1,3 @@
-
 import './style.css';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -36,7 +35,9 @@ const emptyData = () => ({
 function loadData() {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
-    return { ...emptyData(), ...saved,
+    return {
+      ...emptyData(),
+      ...saved,
       settings: { ...emptyData().settings, ...(saved.settings || {}) }
     };
   } catch {
@@ -51,6 +52,8 @@ let calculatorValue = '0';
 let calculatorPrevious = null;
 let calculatorOperator = null;
 let calculatorFresh = false;
+let clockInterval = null;
+let modalResolver = null;
 
 function save() {
   localStorage.setItem(KEY, JSON.stringify(data));
@@ -58,17 +61,111 @@ function save() {
 
 function escapeHTML(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
+    '&':'&amp;',
+    '<':'&lt;',
+    '>':'&gt;',
+    '"':'&quot;',
+    "'":'&#039;'
   })[c]);
+}
+
+function icon(name, size = 20) {
+  const paths = {
+    home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
+    transactions: '<path d="M12 3v18m-7-7 7 7 7-7M5 7l7-7 7 7"/>',
+    calculator: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8v4H8zM8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/>',
+    savings: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10m-3-7h4a2 2 0 1 1 0 4H9"/>',
+    notes: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/>',
+    debts: '<path d="M7 7h13l-3-3m3 3-3 3M17 17H4l3 3m-3-3 3-3"/>',
+    stocks: '<path d="m12 3 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5M12 13v8"/>',
+    reports: '<path d="M4 19V5m0 14h17"/><path d="m7 15 4-4 3 2 6-7"/>',
+    calendar: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 17h.01M12 17h.01"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.6.9l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.6-.9l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-1.9l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.6-.9l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.6.9l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 1.9z"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-9h.01"/>',
+    backup: '<path d="M12 16V3m-5 5 5-5 5 5M4 17v4h16v-4"/>',
+    income: '<path d="M12 19V5m-7 7 7-7 7 7"/>',
+    expense: '<path d="M12 5v14m-7-7 7 7 7-7"/>',
+    profit: '<path d="m3 17 6-6 4 4 8-9"/><path d="M15 6h6v6"/>',
+    close: '<path d="m18 6-12 12M6 6l12 12"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+    logout: '<path d="M10 17l5-5-5-5m5 5H3"/><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"/>'
+  };
+
+  return `<svg class="ui-icon" width="${size}" height="${size}" viewBox="0 0 24 24"
+    fill="none" stroke="currentColor" stroke-width="1.8"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    ${paths[name] || paths.info}
+  </svg>`;
 }
 
 function toast(message) {
   document.querySelector('.toast')?.remove();
   const el = document.createElement('div');
   el.className = 'toast';
-  el.textContent = message;
+  el.innerHTML = `${icon('check',17)}<span>${escapeHTML(message)}</span>`;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 2600);
+}
+
+function confirmDialog({
+  title = 'Konfirmasi tindakan',
+  message = 'Apakah lu yakin ingin melanjutkan?',
+  confirmText = 'Ya, lanjutkan',
+  danger = false
+} = {}) {
+  document.querySelector('.dialog-overlay')?.remove();
+
+  return new Promise(resolve => {
+    modalResolver = resolve;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'dialog-overlay';
+    overlay.innerHTML = `
+      <section class="confirm-dialog" role="dialog" aria-modal="true">
+        <div class="dialog-top">
+          <div class="dialog-symbol">${icon(danger ? 'info' : 'check',24)}</div>
+          <button class="dialog-close" data-dialog-cancel aria-label="Tutup">
+            ${icon('close',18)}
+          </button>
+        </div>
+        <h3>${escapeHTML(title)}</h3>
+        <p>${escapeHTML(message)}</p>
+        <div class="dialog-actions">
+          <button class="secondary-btn" data-dialog-cancel>Batal</button>
+          <button class="${danger ? 'dialog-danger' : 'primary-btn'}" data-dialog-confirm>
+            ${escapeHTML(confirmText)}
+          </button>
+        </div>
+      </section>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const finish = value => {
+      overlay.classList.add('closing');
+      setTimeout(() => overlay.remove(), 160);
+      modalResolver = null;
+      resolve(value);
+    };
+
+    overlay.querySelectorAll('[data-dialog-cancel]').forEach(button => {
+      button.addEventListener('click', () => finish(false));
+    });
+
+    overlay.querySelector('[data-dialog-confirm]').addEventListener('click', () => finish(true));
+
+    overlay.addEventListener('click', e => {
+      if (e.target === overlay) finish(false);
+    });
+
+    const onKey = e => {
+      if (e.key === 'Escape') {
+        finish(false);
+        document.removeEventListener('keydown', onKey);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+  });
 }
 
 function totals() {
@@ -87,7 +184,7 @@ function totals() {
 }
 
 function logo() {
-  return `<img src="/tj.svg" alt="TJ" class="logo-img">`;
+  return '<img src="/tj.svg" alt="TJ" class="logo-img">';
 }
 
 function loginScreen() {
@@ -103,18 +200,16 @@ function loginScreen() {
             <div class="muted small">PERSONAL FINANCE SYSTEM</div>
           </div>
         </div>
-
         <div class="login-heading">
           <div class="eyebrow">WELCOME BACK</div>
           <h1>Mulai kelola uangmu.</h1>
           <p class="muted">Masuk menggunakan username untuk membuka dashboard tabunganmu.</p>
         </div>
-
         <form id="loginForm">
           <div class="field">
             <label>USERNAME</label>
-            <input id="username" maxlength="24"
-              placeholder="Masukkan username..." required autocomplete="username">
+            <input id="username" maxlength="24" placeholder="Masukkan username..."
+              required autocomplete="username">
           </div>
           <button class="primary-btn full">Masuk ke aplikasi →</button>
         </form>
@@ -134,23 +229,23 @@ function loginScreen() {
 }
 
 const navItems = [
-  ['dashboard','⌂','Dashboard'],
-  ['transactions','↕','Transaksi'],
-  ['calculator','＋','Kalkulator'],
-  ['savings','◎','Tabungan'],
-  ['notes','▤','Catatan'],
-  ['debts','⇄','Kasbon'],
-  ['stocks','▦','Stok'],
-  ['reports','▥','Laporan'],
-  ['calendar','▦','Kalender'],
-  ['settings','⚙','Pengaturan'],
-  ['info','ⓘ','Info Aplikasi']
+  ['dashboard','home','Dashboard'],
+  ['transactions','transactions','Transaksi'],
+  ['calculator','calculator','Kalkulator'],
+  ['savings','savings','Tabungan'],
+  ['notes','notes','Catatan'],
+  ['debts','debts','Kasbon'],
+  ['stocks','stocks','Stok'],
+  ['reports','reports','Laporan'],
+  ['calendar','calendar','Kalender'],
+  ['settings','settings','Pengaturan'],
+  ['info','info','Info Aplikasi']
 ];
 
 function navButton(item) {
-  const [id, icon, label] = item;
+  const [id, iconName, label] = item;
   return `<button class="nav-btn ${currentPage === id ? 'active' : ''}" data-page="${id}">
-    <span class="nav-icon">${icon}</span><span>${label}</span>
+    <span class="nav-icon">${icon(iconName,18)}</span><span>${label}</span>
   </button>`;
 }
 
@@ -159,6 +254,14 @@ function pageTitle() {
 }
 
 function shell(content) {
+  const mobileItems = [
+    ['dashboard','home','Home'],
+    ['transactions','transactions','Transaksi'],
+    ['calculator','calculator','Hitung'],
+    ['savings','savings','Tabungan'],
+    ['settings','settings','Setting']
+  ];
+
   return `
     <div class="app-shell">
       <aside class="sidebar">
@@ -169,15 +272,12 @@ function shell(content) {
             <div class="muted small">FINANCE MANAGER</div>
           </div>
         </div>
-
         <div class="nav-label">MENU UTAMA</div>
         ${navItems.slice(0,5).map(navButton).join('')}
-
         <div class="nav-label">MANAJEMEN</div>
         ${navItems.slice(5).map(navButton).join('')}
-
         <div class="sidebar-bottom">
-          <button class="nav-btn" id="logoutBtn">↪ Keluar</button>
+          <button class="nav-btn" id="logoutBtn">${icon('logout',18)}<span>Keluar</span></button>
         </div>
       </aside>
 
@@ -200,41 +300,37 @@ function shell(content) {
     </div>
 
     <nav class="mobile-nav">
-      ${[
-        ['dashboard','⌂','Home'],
-        ['transactions','↕','Transaksi'],
-        ['calculator','＋','Hitung'],
-        ['savings','◎','Tabungan'],
-        ['settings','⚙','Setting']
-      ].map(([id,icon,label]) => `
+      ${mobileItems.map(([id,iconName,label]) => `
         <button data-page="${id}" class="${currentPage === id ? 'active' : ''}">
-          <span>${icon}</span>${label}
+          <span class="mobile-nav-icon">${icon(iconName,20)}</span>
+          <span class="mobile-nav-label">${label}</span>
+          <i class="nav-active-indicator"></i>
         </button>
       `).join('')}
     </nav>
   `;
 }
 
-function statCard(icon,label,value,isCount=false) {
+function statCard(iconName,label,value,isCount=false) {
   return `
     <div class="stat-card">
-      <div class="stat-icon">${icon}</div>
+      <div class="stat-icon">${icon(iconName,21)}</div>
       <div class="stat-label">${label}</div>
       <div class="stat-value">${isCount ? Number(value).toLocaleString('id-ID') : rupiah(value)}</div>
     </div>
   `;
 }
 
-function feature(id,icon,title,description) {
+function feature(id,iconName,title,description) {
   return `<button class="feature-card" data-page="${id}">
-    <div class="feature-icon">${icon}</div>
+    <div class="feature-icon">${icon(iconName,23)}</div>
     <strong>${title}</strong>
     <span>${description}</span>
   </button>`;
 }
 
 function transactionTable(items) {
-  if (!items.length) return `<div class="empty-state">Belum ada transaksi.</div>`;
+  if (!items.length) return '<div class="empty-state">Belum ada transaksi.</div>';
 
   return `<div class="table-wrap"><table>
     <thead><tr><th>Keterangan</th><th>Kategori</th><th>Tanggal</th><th>Nominal</th><th>Aksi</th></tr></thead>
@@ -268,11 +364,19 @@ function dashboardPage() {
       </div>
     </section>
 
+    <section class="clock-card">
+      <div class="clock-left">
+        <span class="clock-label">WAKTU SEKARANG</span>
+        <strong id="liveClock">--:--:--</strong>
+      </div>
+      <div class="clock-date" id="liveClockDate">Memuat tanggal...</div>
+    </section>
+
     <section class="stats-grid">
-      ${statCard('↗','Total pemasukan',t.income)}
-      ${statCard('↘','Total pengeluaran',t.expense)}
-      ${statCard('◆','Keuntungan bersih',t.profit)}
-      ${statCard('#','Jumlah transaksi',t.count,true)}
+      ${statCard('income','Total pemasukan',t.income)}
+      ${statCard('expense','Total pengeluaran',t.expense)}
+      ${statCard('profit','Keuntungan bersih',t.profit)}
+      ${statCard('transactions','Jumlah transaksi',t.count,true)}
     </section>
 
     <div class="section-title">
@@ -280,17 +384,17 @@ function dashboardPage() {
     </div>
 
     <section class="feature-grid">
-      ${feature('transactions','↕','Transaksi','Pemasukan & pengeluaran')}
-      ${feature('calculator','＋','Kalkulator','Hitung nominal dan MC')}
-      ${feature('savings','◎','Target tabungan','Pantau tujuanmu')}
-      ${feature('notes','▤','Catatan','Simpan catatan penting')}
-      ${feature('debts','⇄','Kasbon','Catat utang dan piutang')}
-      ${feature('stocks','▦','Manajemen stok','Pantau barang')}
-      ${feature('reports','▥','Laporan','Ringkasan keuangan')}
-      ${feature('calendar','▦','Kalender','Jadwal transaksi')}
-      ${feature('settings','⚙','Pengaturan','Profil & notifikasi')}
-      ${feature('info','ⓘ','Info aplikasi','Seluruh informasi aplikasi')}
-      ${feature('backup','⇧','Backup data','Simpan cadangan data')}
+      ${feature('transactions','transactions','Transaksi','Pemasukan & pengeluaran')}
+      ${feature('calculator','calculator','Kalkulator','Hitung nominal dan MC')}
+      ${feature('savings','savings','Target tabungan','Pantau tujuanmu')}
+      ${feature('notes','notes','Catatan','Simpan catatan penting')}
+      ${feature('debts','debts','Kasbon','Catat utang dan piutang')}
+      ${feature('stocks','stocks','Manajemen stok','Pantau barang')}
+      ${feature('reports','reports','Laporan','Ringkasan keuangan')}
+      ${feature('calendar','calendar','Kalender','Jadwal transaksi')}
+      ${feature('settings','settings','Pengaturan','Profil & notifikasi')}
+      ${feature('info','info','Info aplikasi','Seluruh informasi aplikasi')}
+      ${feature('backup','backup','Backup data','Simpan cadangan data')}
     </section>
 
     <div class="section-title">
@@ -347,7 +451,6 @@ function calculatorPage() {
         `).join('')}
       </div>
     </section>
-
     <section class="panel">
       <h3>Kalkulator MC / keuntungan</h3>
       <form id="mcForm">
@@ -388,7 +491,7 @@ function savingsPage() {
         </form>
         <button class="danger-btn" data-delete-goal="${g.id}">Hapus target</button>
       </section>`;
-    }).join('') : `<section class="panel empty-state">Belum ada target.</section>`}
+    }).join('') : '<section class="panel empty-state">Belum ada target.</section>'}
   `;
 }
 
@@ -406,7 +509,7 @@ function notesPage() {
       <div class="section-title"><strong>${escapeHTML(n.title)}</strong><span class="muted small">${escapeHTML(n.date)}</span></div>
       <p>${escapeHTML(n.body)}</p>
       <button class="danger-btn" data-delete-note="${n.id}">Hapus</button>
-    </section>`).join('') || `<section class="panel empty-state">Belum ada catatan.</section>`}
+    </section>`).join('') || '<section class="panel empty-state">Belum ada catatan.</section>'}
   `;
 }
 
@@ -432,7 +535,7 @@ function debtsPage() {
       <p class="muted small">Jatuh tempo: ${escapeHTML(d.due || '-')}</p>
       <button class="secondary-btn" data-paid-debt="${d.id}">Tandai lunas</button>
       <button class="danger-btn" data-delete-debt="${d.id}">Hapus</button>
-    </section>`).join('') || `<section class="panel empty-state">Belum ada kasbon.</section>`}
+    </section>`).join('') || '<section class="panel empty-state">Belum ada kasbon.</section>'}
   `;
 }
 
@@ -457,7 +560,7 @@ function stocksPage() {
           <td>${escapeHTML(s.name)}</td><td>${s.quantity}</td><td>${rupiah(s.price)}</td>
           <td><button class="danger-btn small-btn" data-delete-stock="${s.id}">Hapus</button></td>
         </tr>`).join('')}</tbody>
-      </table></div>` : `<div class="empty-state">Belum ada stok barang.</div>`}
+      </table></div>` : '<div class="empty-state">Belum ada stok barang.</div>'}
     </section>
   `;
 }
@@ -471,10 +574,10 @@ function reportsPage() {
 
   return `
     <section class="stats-grid">
-      ${statCard('↗','Pemasukan bulan ini',mi)}
-      ${statCard('↘','Pengeluaran bulan ini',me)}
-      ${statCard('◆','Saldo keseluruhan',t.balance)}
-      ${statCard('#','Jumlah transaksi',t.count,true)}
+      ${statCard('income','Pemasukan bulan ini',mi)}
+      ${statCard('expense','Pengeluaran bulan ini',me)}
+      ${statCard('profit','Saldo keseluruhan',t.balance)}
+      ${statCard('transactions','Jumlah transaksi',t.count,true)}
     </section>
     <section class="panel">
       <h3>Ringkasan keuangan</h3>
@@ -500,7 +603,7 @@ function calendarPage() {
 }
 
 function calendarList(items) {
-  if (!items.length) return `<div class="empty-state">Tidak ada transaksi pada bulan ini.</div>`;
+  if (!items.length) return '<div class="empty-state">Tidak ada transaksi pada bulan ini.</div>';
   return [...items].sort((a,b)=>a.date.localeCompare(b.date)).map(t=>`
     <div class="setting-row">
       <div><strong>${escapeHTML(t.date)}</strong><p>${escapeHTML(t.description)}</p></div>
@@ -521,14 +624,12 @@ function settingsPage() {
         </select>
       </div>
     </section>
-
     <section class="panel">
       <h3>Profil pengguna</h3>
       <div class="setting-row"><div><strong>Username</strong><p>${escapeHTML(username)}</p></div><span class="badge">AKTIF</span></div>
       <div class="setting-row"><div><strong>Penyimpanan</strong><p>Data lokal perangkat</p></div><span class="badge">LOCAL</span></div>
       <div class="setting-row"><div><strong>Versi aplikasi</strong><p>1.1.0</p></div></div>
     </section>
-
     <section class="panel">
       <h3>Pengingat waktu sholat</h3>
       <p class="muted small">Aktifkan notifikasi Android untuk pengingat di luar aplikasi.</p>
@@ -542,7 +643,6 @@ function settingsPage() {
       </form>
       <p class="muted small">Jadwal diambil dari AlAdhan. Periksa pengaturan baterai Android jika notifikasi terlambat.</p>
     </section>
-
     <section class="panel">
       <h3>Data aplikasi</h3>
       <div class="form-actions">
@@ -551,7 +651,6 @@ function settingsPage() {
         <input type="file" id="restoreFile" accept="application/json" hidden>
       </div>
     </section>
-
     <section class="panel">
       <h3>Pembuat / Developer</h3>
       <div class="setting-row">
@@ -559,7 +658,6 @@ function settingsPage() {
         <span class="badge">DEV</span>
       </div>
     </section>
-
     <section class="panel">
       <button class="danger-btn full" id="logoutBtn">Keluar dari akun</button>
     </section>
@@ -592,14 +690,12 @@ function infoPage() {
         <span class="badge">VERSION 1.1.0</span>
       </div>
     </section>
-
     <section class="stats-grid">
       <div class="stat-card"><div class="stat-label">Versi</div><div class="stat-value">1.1.0</div></div>
       <div class="stat-card"><div class="stat-label">Platform</div><div class="stat-value">Android / Web</div></div>
       <div class="stat-card"><div class="stat-label">Penyimpanan</div><div class="stat-value">Lokal</div></div>
       <div class="stat-card"><div class="stat-label">Developer</div><div class="stat-value">ZORA STORE</div></div>
     </section>
-
     <section class="panel">
       <h3>Seluruh fitur aplikasi</h3>
       ${features.map(([name,detail],i)=>`
@@ -608,7 +704,6 @@ function infoPage() {
           <div><strong>${name}</strong><p class="muted small">${detail}</p></div>
         </div>`).join('')}
     </section>
-
     <section class="panel">
       <h3>Informasi teknis</h3>
       <div class="setting-row"><strong>Application ID</strong><span>com.zorastore.tabungananakjb</span></div>
@@ -616,7 +711,6 @@ function infoPage() {
       <div class="setting-row"><strong>Penyimpanan</strong><span>Local Storage</span></div>
       <p class="muted small">Data tidak otomatis tersinkron ke cloud. Gunakan backup secara berkala. Login username saja bukan sistem keamanan akun.</p>
     </section>
-
     <section class="panel">
       <h3>Developer</h3>
       <div class="setting-row"><div><strong>ZORA STORE</strong><p class="muted small">Pengembang aplikasi</p></div><span class="badge">DEVELOPER</span></div>
@@ -645,7 +739,9 @@ function restoreData(file) {
         ...emptyData(),...restored,
         settings:{...emptyData().settings,...(restored.settings||{})}
       };
-      save();render();toast('Data berhasil dipulihkan.');
+      save();
+      render();
+      toast('Data berhasil dipulihkan.');
     } catch {
       toast('File backup tidak valid.');
     }
@@ -662,7 +758,9 @@ function exportCSV() {
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
-  a.href=url;a.download=`laporan-tabungan-${today()}.csv`;a.click();
+  a.href=url;
+  a.download=`laporan-tabungan-${today()}.csv`;
+  a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -676,7 +774,10 @@ function calculate(a,b,op) {
 
 function calculatorInput(key) {
   if(key==='AC') {
-    calculatorValue='0';calculatorPrevious=null;calculatorOperator=null;calculatorFresh=false;
+    calculatorValue='0';
+    calculatorPrevious=null;
+    calculatorOperator=null;
+    calculatorFresh=false;
   } else if(key==='⌫') {
     calculatorValue=calculatorValue.length>1?calculatorValue.slice(0,-1):'0';
   } else if(key==='±') {
@@ -684,12 +785,16 @@ function calculatorInput(key) {
   } else if(key==='%') {
     calculatorValue=String(Number(calculatorValue)/100);
   } else if(['+','−','×','÷'].includes(key)) {
-    calculatorPrevious=Number(calculatorValue);calculatorOperator=key;calculatorFresh=true;
+    calculatorPrevious=Number(calculatorValue);
+    calculatorOperator=key;
+    calculatorFresh=true;
   } else if(key==='=') {
     if(calculatorPrevious!==null && calculatorOperator) {
       const result=calculate(calculatorPrevious,Number(calculatorValue),calculatorOperator);
       calculatorValue=Number.isFinite(result)?String(Number(result.toFixed(8))):'Error';
-      calculatorPrevious=null;calculatorOperator=null;calculatorFresh=true;
+      calculatorPrevious=null;
+      calculatorOperator=null;
+      calculatorFresh=true;
     }
   } else if(key==='.') {
     if(!calculatorValue.includes('.')) calculatorValue+='.';
@@ -732,7 +837,9 @@ async function syncPrayerNotifications() {
       ['Isha','Isya']
     ];
 
-    await LocalNotifications.cancel({notifications:names.map((_,i)=>({id:8100+i}))});
+    await LocalNotifications.cancel({
+      notifications:names.map((_,i)=>({id:8100+i}))
+    });
 
     const notifications=[];
     for(const [index,[key,label]] of names.entries()) {
@@ -740,12 +847,13 @@ async function syncPrayerNotifications() {
       const at=new Date();
       at.setHours(hour,minute,0,0);
       if(at.getTime()<=Date.now()) at.setDate(at.getDate()+1);
+
       notifications.push({
         id:8100+index,
         title:`Halo, ${username}!`,
         body:`Waktunya sholat ${label}. Jangan tinggalkan ibadahmu demi hal-hal yang tidak penting.`,
         schedule:{at,allowWhileIdle:true},
-        smallIcon:'ic_stat_icon_config_sample'
+        smallIcon:'ic_stat_tj'
       });
     }
 
@@ -767,10 +875,37 @@ async function enablePrayer() {
   await syncPrayerNotifications();
 }
 
+function updateClock() {
+  const clock = document.querySelector('#liveClock');
+  const date = document.querySelector('#liveClockDate');
+  if (!clock || !date) return;
+
+  const now = new Date();
+  clock.textContent = now.toLocaleTimeString('id-ID', {
+    hour:'2-digit',
+    minute:'2-digit',
+    second:'2-digit',
+    hour12:false
+  });
+  date.textContent = now.toLocaleDateString('id-ID', {
+    weekday:'long',
+    day:'numeric',
+    month:'long',
+    year:'numeric'
+  });
+}
+
+function startClock() {
+  clearInterval(clockInterval);
+  updateClock();
+  clockInterval = setInterval(updateClock, 1000);
+}
+
 function render() {
   document.documentElement.dataset.theme=data.settings.theme||'dark';
 
   if(!username) {
+    clearInterval(clockInterval);
     loginScreen();
     return;
   }
@@ -788,12 +923,19 @@ function render() {
     case 'calendar':content=calendarPage();break;
     case 'settings':content=settingsPage();break;
     case 'info':content=infoPage();break;
-    case 'backup':content=`<section class="panel"><h3>Backup data</h3><button class="primary-btn" id="backupBtn">Download backup</button></section>`;break;
-    default:currentPage='dashboard';content=dashboardPage();
+    case 'backup':
+      content='<section class="panel"><h3>Backup data</h3><button class="primary-btn" id="backupBtn">Download backup</button></section>';
+      break;
+    default:
+      currentPage='dashboard';
+      content=dashboardPage();
   }
 
   document.querySelector('#app').innerHTML=shell(content);
   bindEvents();
+
+  if(currentPage === 'dashboard') startClock();
+  else clearInterval(clockInterval);
 }
 
 function bindEvents() {
@@ -806,8 +948,15 @@ function bindEvents() {
   });
 
   document.querySelectorAll('#logoutBtn').forEach(button=>{
-    button.addEventListener('click',()=>{
-      if(!confirm('Keluar dari aplikasi?')) return;
+    button.addEventListener('click',async()=>{
+      const accepted = await confirmDialog({
+        title:'Keluar dari aplikasi?',
+        message:'Sesi username lu akan diakhiri. Data tabungan tetap tersimpan di perangkat.',
+        confirmText:'Keluar',
+        danger:true
+      });
+      if(!accepted) return;
+
       localStorage.removeItem(SESSION);
       username='';
       currentPage='dashboard';
@@ -828,12 +977,19 @@ function bindEvents() {
     const f=new FormData(e.currentTarget);
     const amount=Number(f.get('amount'));
     if(!Number.isFinite(amount)||amount<=0) return toast('Nominal tidak valid.');
+
     data.transactions.push({
-      id:uid(),type:f.get('type'),amount,
+      id:uid(),
+      type:f.get('type'),
+      amount,
       description:f.get('description').trim(),
-      category:f.get('category'),date:f.get('date'),createdAt:Date.now()
+      category:f.get('category'),
+      date:f.get('date'),
+      createdAt:Date.now()
     });
-    save();render();toast('Transaksi berhasil disimpan.');
+    save();
+    render();
+    toast('Transaksi berhasil disimpan.');
   });
 
   document.querySelector('#transactionSearch')?.addEventListener('input',e=>{
@@ -841,6 +997,7 @@ function bindEvents() {
     const filtered=data.transactions.filter(t=>
       `${t.description} ${t.category} ${t.date}`.toLowerCase().includes(q)
     ).sort((a,b)=>b.createdAt-a.createdAt);
+
     document.querySelector('#transactionList').innerHTML=transactionTable(filtered);
     bindDeleteTransaction();
   });
@@ -849,10 +1006,19 @@ function bindEvents() {
 
   function bindDeleteTransaction() {
     document.querySelectorAll('[data-delete-transaction]').forEach(button=>{
-      button.addEventListener('click',()=>{
-        if(!confirm('Hapus transaksi ini?')) return;
+      button.addEventListener('click',async()=>{
+        const accepted = await confirmDialog({
+          title:'Hapus transaksi?',
+          message:'Transaksi yang dihapus tidak bisa dikembalikan kecuali lu punya backup.',
+          confirmText:'Hapus transaksi',
+          danger:true
+        });
+        if(!accepted) return;
+
         data.transactions=data.transactions.filter(t=>t.id!==Number(button.dataset.deleteTransaction));
-        save();render();toast('Transaksi dihapus.');
+        save();
+        render();
+        toast('Transaksi dihapus.');
       });
     });
   }
@@ -877,6 +1043,7 @@ function bindEvents() {
       <div class="setting-row"><span>Keuntungan bersih</span><strong class="${profit>=0?'income':'expense'}">${rupiah(profit)}</strong></div>
       <button class="secondary-btn" id="saveMC">Simpan hasil</button>
     `;
+
     document.querySelector('#saveMC').addEventListener('click',()=>{
       data.transactions.push({
         id:uid(),type:'income',amount:revenue,
@@ -888,15 +1055,23 @@ function bindEvents() {
         description:'Modal MC',category:'Modal',
         date:today(),createdAt:Date.now()
       });
-      save();toast('Hasil MC dicatat.');
+      save();
+      toast('Hasil MC dicatat.');
     });
   });
 
   document.querySelector('#goalForm')?.addEventListener('submit',e=>{
     e.preventDefault();
     const f=new FormData(e.currentTarget);
-    data.goals.push({id:uid(),name:f.get('name').trim(),target:Number(f.get('target')),saved:0});
-    save();render();toast('Target tabungan dibuat.');
+    data.goals.push({
+      id:uid(),
+      name:f.get('name').trim(),
+      target:Number(f.get('target')),
+      saved:0
+    });
+    save();
+    render();
+    toast('Target tabungan dibuat.');
   });
 
   document.querySelectorAll('[data-save-goal]').forEach(form=>{
@@ -905,28 +1080,54 @@ function bindEvents() {
       const goal=data.goals.find(g=>g.id===Number(form.dataset.saveGoal));
       const amount=Number(new FormData(form).get('amount'));
       if(!goal||amount<=0) return;
-      goal.saved+=amount;save();render();toast('Tabungan ditambahkan.');
+      goal.saved+=amount;
+      save();
+      render();
+      toast('Tabungan ditambahkan.');
     });
   });
 
   document.querySelectorAll('[data-delete-goal]').forEach(button=>{
-    button.addEventListener('click',()=>{
+    button.addEventListener('click',async()=>{
+      if(!await confirmDialog({
+        title:'Hapus target tabungan?',
+        message:'Target ini akan dihapus dari daftar tabungan.',
+        confirmText:'Hapus target',
+        danger:true
+      })) return;
       data.goals=data.goals.filter(g=>g.id!==Number(button.dataset.deleteGoal));
-      save();render();
+      save();
+      render();
+      toast('Target dihapus.');
     });
   });
 
   document.querySelector('#noteForm')?.addEventListener('submit',e=>{
     e.preventDefault();
     const f=new FormData(e.currentTarget);
-    data.notes.unshift({id:uid(),title:f.get('title').trim(),body:f.get('body').trim(),date:today()});
-    save();render();toast('Catatan disimpan.');
+    data.notes.unshift({
+      id:uid(),
+      title:f.get('title').trim(),
+      body:f.get('body').trim(),
+      date:today()
+    });
+    save();
+    render();
+    toast('Catatan disimpan.');
   });
 
   document.querySelectorAll('[data-delete-note]').forEach(button=>{
-    button.addEventListener('click',()=>{
+    button.addEventListener('click',async()=>{
+      if(!await confirmDialog({
+        title:'Hapus catatan?',
+        message:'Catatan yang dipilih akan dihapus permanen.',
+        confirmText:'Hapus catatan',
+        danger:true
+      })) return;
       data.notes=data.notes.filter(n=>n.id!==Number(button.dataset.deleteNote));
-      save();render();
+      save();
+      render();
+      toast('Catatan dihapus.');
     });
   });
 
@@ -934,24 +1135,44 @@ function bindEvents() {
     e.preventDefault();
     const f=new FormData(e.currentTarget);
     data.debts.push({
-      id:uid(),person:f.get('person').trim(),type:f.get('type'),
-      amount:Number(f.get('amount')),due:f.get('due'),paid:false
+      id:uid(),
+      person:f.get('person').trim(),
+      type:f.get('type'),
+      amount:Number(f.get('amount')),
+      due:f.get('due'),
+      paid:false
     });
-    save();render();toast('Kasbon disimpan.');
+    save();
+    render();
+    toast('Kasbon disimpan.');
   });
 
   document.querySelectorAll('[data-paid-debt]').forEach(button=>{
-    button.addEventListener('click',()=>{
-      const id=Number(button.dataset.paidDebt);
-      data.debts=data.debts.filter(d=>d.id!==id);
-      save();render();toast('Kasbon ditandai lunas dan diarsipkan.');
+    button.addEventListener('click',async()=>{
+      if(!await confirmDialog({
+        title:'Tandai kasbon lunas?',
+        message:'Kasbon ini akan dihapus dari daftar aktif dan dianggap selesai.',
+        confirmText:'Tandai lunas'
+      })) return;
+      data.debts=data.debts.filter(d=>d.id!==Number(button.dataset.paidDebt));
+      save();
+      render();
+      toast('Kasbon ditandai lunas dan diarsipkan.');
     });
   });
 
   document.querySelectorAll('[data-delete-debt]').forEach(button=>{
-    button.addEventListener('click',()=>{
+    button.addEventListener('click',async()=>{
+      if(!await confirmDialog({
+        title:'Hapus kasbon?',
+        message:'Data kasbon ini akan dihapus dari aplikasi.',
+        confirmText:'Hapus kasbon',
+        danger:true
+      })) return;
       data.debts=data.debts.filter(d=>d.id!==Number(button.dataset.deleteDebt));
-      save();render();
+      save();
+      render();
+      toast('Kasbon dihapus.');
     });
   });
 
@@ -959,25 +1180,51 @@ function bindEvents() {
     e.preventDefault();
     const f=new FormData(e.currentTarget);
     data.stocks.push({
-      id:uid(),name:f.get('name').trim(),
-      quantity:Number(f.get('quantity')),price:Number(f.get('price'))
+      id:uid(),
+      name:f.get('name').trim(),
+      quantity:Number(f.get('quantity')),
+      price:Number(f.get('price'))
     });
-    save();render();toast('Barang ditambahkan.');
+    save();
+    render();
+    toast('Barang ditambahkan.');
   });
 
   document.querySelectorAll('[data-delete-stock]').forEach(button=>{
-    button.addEventListener('click',()=>{
+    button.addEventListener('click',async()=>{
+      if(!await confirmDialog({
+        title:'Hapus barang dari stok?',
+        message:'Barang yang dipilih akan dihapus dari daftar stok.',
+        confirmText:'Hapus barang',
+        danger:true
+      })) return;
       data.stocks=data.stocks.filter(s=>s.id!==Number(button.dataset.deleteStock));
-      save();render();
+      save();
+      render();
+      toast('Barang dihapus.');
     });
   });
 
   document.querySelector('#exportCsv')?.addEventListener('click',exportCSV);
   document.querySelector('#backupBtn')?.addEventListener('click',backupData);
 
-  document.querySelector('#restoreBtn')?.addEventListener('click',()=>document.querySelector('#restoreFile')?.click());
-  document.querySelector('#restoreFile')?.addEventListener('change',e=>{
-    if(e.target.files[0]) restoreData(e.target.files[0]);
+  document.querySelector('#restoreBtn')?.addEventListener('click',()=> {
+    document.querySelector('#restoreFile')?.click();
+  });
+
+  document.querySelector('#restoreFile')?.addEventListener('change',async e=>{
+    const file=e.target.files[0];
+    if(!file) return;
+
+    if(!await confirmDialog({
+      title:'Pulihkan data backup?',
+      message:'Data saat ini akan diganti dengan data dari file backup.',
+      confirmText:'Pulihkan data'
+    })) {
+      e.target.value='';
+      return;
+    }
+    restoreData(file);
   });
 
   document.querySelector('#calendarMonth')?.addEventListener('change',e=>{
@@ -995,6 +1242,13 @@ function bindEvents() {
   });
 
   document.querySelector('#disablePrayer')?.addEventListener('click',async()=>{
+    if(!await confirmDialog({
+      title:'Matikan pengingat salat?',
+      message:'Notifikasi pengingat waktu salat tidak akan dijadwalkan lagi.',
+      confirmText:'Matikan pengingat',
+      danger:true
+    })) return;
+
     data.settings.prayerEnabled=false;
     save();
     if(Capacitor.isNativePlatform()) {
