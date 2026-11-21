@@ -3,5 +3,11 @@
   "appId": "com.zorastore.tabungananakjb",
   "appName": "TABUNGAN ANAK JB",
   "webDir": "dist",
-  "bundledWebRuntime": false
+  "bundledWebRuntime": false,
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon_config_sample",
+      "iconColor": "#8BD5A7"
+    }
+  }
 }
