@@ -22,6 +22,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -38,6 +39,9 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Generate Android assets
+        run: npx capacitor-assets generate --android --assetPath assets
+
       - name: Sync Android
         run: npx cap sync android
 
@@ -52,3 +56,4 @@ jobs:
         with:
           name: tabungan-anak-jb-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
